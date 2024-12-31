@@ -1,54 +1,10 @@
+from asyncio import Task
 import logging
-from datetime import datetime
-import json
+import sqlite3
 
-# Configure logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+from routine_manager import RoutineManager
 
-class Task:
-    _id_counter = 1
-
-    def __init__(self, title, status, brain_id):
-        self.id = Task._id_counter
-        Task._id_counter += 1
-        self.title = title
-        self.status = status
-        self.brain_id = brain_id
-        logging.info(f"Task created: {self.title} with status {self.status}")
-
-    def get_title(self):
-        return self.title
-
-    def get_status(self):
-        return self.status
-
-    def set_status(self, status):
-        self.status = status
-        logging.info(f"Task status updated to: {status}")
-
-    def get_brain_id(self):
-        return self.brain_id
-
-    def __repr__(self):
-        return f"Task({self.title}, {self.status})"
-
-
-class RoutineManager:
-    def __init__(self):
-        self.routine = {}  # Store routine tasks for each weekday/hour
-
-    def set_routine(self, task, brain_id, weekday, hour):
-         # Using setdefault to handle routine and weekday initialization
-        self.routine.setdefault(brain_id, {}).setdefault(weekday.lower(), {})[hour] = task
-        logging.info(f"Routine set: {task.get_title()} on {weekday} at {hour}:00 for Brain ID {brain_id}")
-
-    def get_routine(self, weekday, hour):
-        task = self.routine.get(weekday.lower(), {}).get(hour, None)  # Safe access
-        if task:
-            logging.info(f"Retrieved task: {task.get_title()} on {weekday} at {hour}:00")
-        else:
-            logging.warning(f"No task found on {weekday} at {hour}:00")
-        return task
+from asyncio import Task
 
 
 class Brain:
@@ -200,20 +156,144 @@ class Brain:
         logging.debug(f"Getting tasks: {self.tasks}")
         return self.tasks
 
-# Example Usage
-brain1 = Brain()
-brain2 = Brain()
+    def initialize_db(self):
+        """Create the database tables if they do not exist"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
 
-# Make friends between brain1 and brain2
-brain1.be_friends_with(brain2, status=True)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS brains (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            features TEXT
+        );
+        """)
 
-# Check friendship status
-print(brain1.is_friends_with(brain2))  # True
-print(brain2.is_friends_with(brain1))  # True
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS features (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            brain_id INTEGER,
+            feature TEXT,
+            FOREIGN KEY (brain_id) REFERENCES brains(id)
+        );
+        """)
 
-# Break friendship
-brain1.be_friends_with(brain2, status=False)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            brain_id INTEGER,
+            memory TEXT,
+            FOREIGN KEY (brain_id) REFERENCES brains(id)
+        );
+        """)
 
-# Check friendship status after breaking the friendship
-print(brain1.is_friends_with(brain2))  # False
-print(brain2.is_friends_with(brain1))  # False
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS emotions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            brain_id INTEGER,
+            emotion TEXT,
+            FOREIGN KEY (brain_id) REFERENCES brains(id)
+        );
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS personalities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            brain_id INTEGER,
+            personality_trait TEXT,
+            FOREIGN KEY (brain_id) REFERENCES brains(id)
+        );
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS friends (
+            brain1_id INTEGER,
+            brain2_id INTEGER,
+            PRIMARY KEY (brain1_id, brain2_id),
+            FOREIGN KEY (brain1_id) REFERENCES brains(id),
+            FOREIGN KEY (brain2_id) REFERENCES brains(id)
+        );
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            brain_id INTEGER,
+            title TEXT,
+            status TEXT,
+            FOREIGN KEY (brain_id) REFERENCES brains(id)
+        );
+        """)
+
+        conn.commit()
+        conn.close()
+
+    # Save the brain's data to the database
+    def save_to_db(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Insert the brain's features as a JSON string
+        cursor.execute("INSERT INTO brains (features) VALUES (?)", (str(self.features),))
+        self.id = cursor.lastrowid  # Update the brain's id after insertion
+
+        # Save the features
+        for feature in self.features:
+            cursor.execute("INSERT INTO features (brain_id, feature) VALUES (?, ?)", (self.id, feature))
+
+        # Save the memories
+        for memory in self.memories:
+            cursor.execute("INSERT INTO memories (brain_id, memory) VALUES (?, ?)", (self.id, memory))
+
+        # Save the emotions
+        for emotion in self.emotions:
+            cursor.execute("INSERT INTO emotions (brain_id, emotion) VALUES (?, ?)", (self.id, emotion))
+
+        # Save the personalities
+        for personality in self.personality:
+            cursor.execute("INSERT INTO personalities (brain_id, personality_trait) VALUES (?, ?)", (self.id, personality))
+
+        # Save the friends (many-to-many relationship)
+        for friend in self.friends:
+            cursor.execute("INSERT INTO friends (brain1_id, brain2_id) VALUES (?, ?)", (self.id, friend.id))
+
+        # Save the tasks
+        for task in self.tasks:
+            cursor.execute("INSERT INTO tasks (brain_id, title, status) VALUES (?, ?, ?)", (self.id, task.title, task.status))
+
+        conn.commit()
+        conn.close()
+        logging.info(f"Brain with id {self.id} saved to the database.")
+
+    # Load brain's data from the database
+    def load_from_db(self, brain_id):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Load brain's features
+        cursor.execute("SELECT features FROM brains WHERE id = ?", (brain_id,))
+        result = cursor.fetchone()
+        if result:
+            self.features = eval(result[0])  # Convert string back to list
+
+        # Load brain's memories
+        cursor.execute("SELECT memory FROM memories WHERE brain_id = ?", (brain_id,))
+        self.memories = [row[0] for row in cursor.fetchall()]
+
+        # Load brain's emotions
+        cursor.execute("SELECT emotion FROM emotions WHERE brain_id = ?", (brain_id,))
+        self.emotions = [row[0] for row in cursor.fetchall()]
+
+        # Load brain's personality traits
+        cursor.execute("SELECT personality_trait FROM personalities WHERE brain_id = ?", (brain_id,))
+        self.personality = [row[0] for row in cursor.fetchall()]
+
+        # Load brain's friends
+        cursor.execute("SELECT brain2_id FROM friends WHERE brain1_id = ?", (brain_id,))
+        self.friends = [row[0] for row in cursor.fetchall()]
+
+        # Load brain's tasks
+        cursor.execute("SELECT title, status FROM tasks WHERE brain_id = ?", (brain_id,))
+        self.tasks = [Task(title=row[0], status=row[1]) for row in cursor.fetchall()]
+
+        conn.close()
+        logging.info(f"Brain with id {brain_id} loaded from the database.")
